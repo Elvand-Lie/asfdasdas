@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Character Chat</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: #f4f4f4; display: flex; flex-direction: column; min-height: 100vh; }
+    header { background: #333; color: #fff; padding: 1rem; text-align: center; font-size: 1.25rem; }
+    main { flex: 1; padding: 1rem; max-width: 800px; margin: auto; }
+    .section { background: #fff; padding: 1rem; margin-bottom: 1rem; border-radius: 6px; box-shadow: 0 0 5px rgba(0,0,0,0.1); }
+    label { display: block; margin-top: 0.5rem; font-weight: bold; }
+    input[type="text"], textarea { width: 100%; padding: 0.5rem; margin-top: 0.25rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
+    textarea { resize: vertical; }
+    #chat-box { background: #fff; height: 400px; overflow-y: auto; border: 1px solid #ccc; border-radius: 4px; padding: 1rem; display: flex; flex-direction: column; }
+    .msg { margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; max-width: 75%; }
+    .user-msg { background: #3498db; color: #fff; align-self: flex-end; }
+    .ai-msg { background: #ecf0f1; color: #333; align-self: flex-start; position: relative; }
+    .reverse-btn { position: absolute; top: 4px; right: 6px; background: #e74c3c; color: #fff; border: none; border-radius: 4px; font-size: 0.75rem; padding: 2px 6px; cursor: pointer; }
+    #chat-input { display: flex; margin-top: 0.5rem; }
+    #user-input { flex: 1; padding: 0.75rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px 0 0 4px; outline: none; }
+    #send-btn { padding: 0.75rem 1.25rem; background: #2ecc71; color: #fff; border: none; border-radius: 0 4px 4px 0; cursor: pointer; }
+    footer { text-align: center; padding: 0.75rem; font-size: 0.85rem; color: #666; }
+  </style>
+</head>
+<body>
+  <header>Character Chat</header>
+  <main>
+    <div class="section">
+      <label for="hf-token">Hugging Face API Token</label>
+      <input type="text" id="hf-token" placeholder="hf_..." />
+      <label for="char-name">Character Name</label>
+      <input type="text" id="char-name" />
+      <label for="char-desc">Description</label>
+      <textarea id="char-desc"></textarea>
+      <label for="char-taglines">Taglines (comma-separated)</label>
+      <input type="text" id="char-taglines" />
+      <label for="char-def">Behavior Definition</label>
+      <textarea id="char-def"></textarea>
+      <label for="char-greeting">Greeting</label>
+      <textarea id="char-greeting" placeholder="e.g. Hello, I'm your assistant. How can I help?"></textarea>
+    </div>
+    <div class="section">
+      <div id="chat-box"></div>
+      <div id="chat-input">
+        <input type="text" id="user-input" placeholder="Type a message..." />
+        <button id="send-btn">Send</button>
+      </div>
+    </div>
+  </main>
+  <footer>Character Chat App &copy; 2025</footer>
+  <script type="module">
+    import { InferenceClient } from 'https://esm.sh/@huggingface/inference';
+
+    const hfTokenInput = document.getElementById("hf-token");
+    const charNameInput = document.getElementById("char-name");
+    const charDescInput = document.getElementById("char-desc");
+    const charTaglinesInput = document.getElementById("char-taglines");
+    const charDefInput = document.getElementById("char-def");
+    const charGreetingInput = document.getElementById("char-greeting");
+    const chatBox = document.getElementById("chat-box");
+    const userInput = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
+
+    let client = null;
+    let currentToken = "";
+    let messages = [];
+    let initialized = false;
+    let isSending = false;
+
+    function appendMsg(role, content, index = null) {
+      const div = document.createElement("div");
+      div.className = `msg ${role === 'user' ? 'user-msg' : 'ai-msg'}`;
+      div.textContent = content;
+      if (role === 'assistant' && index !== null) {
+        const btn = document.createElement("button");
+        btn.textContent = "↩";
+        btn.className = "reverse-btn";
+        btn.onclick = () => {
+          messages = messages.slice(0, index);
+          renderChat();
+        };
+        div.appendChild(btn);
+      }
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function renderChat() {
+      chatBox.innerHTML = "";
+      messages.forEach((msg, i) => {
+        if (msg.role !== "system") {
+          appendMsg(msg.role, msg.content, msg.role === "assistant" ? i : null);
+        }
+      });
+    }
+
+    async function initCharacter() {
+      const name = charNameInput.value.trim();
+      const desc = charDescInput.value.trim();
+      const tags = charTaglinesInput.value.trim();
+      const def = charDefInput.value.trim();
+      const greeting = charGreetingInput.value.trim() || `Hello, I'm ${name || 'your assistant'}. How can I help today?`;
+
+      const sysPrompt = [
+        name && `Name: ${name}`,
+        desc && `Description: ${desc}`,
+        tags && `Taglines: ${tags}`,
+        def && `Definition: ${def}`,
+        `Always stay in character, be helpful, and engage proactively.`
+      ].filter(Boolean).join("\n");
+
+      messages.push({ role: "system", content: sysPrompt });
+      messages.push({ role: "assistant", content: greeting });
+      appendMsg("assistant", greeting, messages.length - 1);
+      initialized = true;
+    }
+
+    async function sendMessage() {
+      if (isSending) return;
+      isSending = true;
+
+      const token = hfTokenInput.value.trim();
+      const input = userInput.value.trim();
+      if (!token || !input) {
+        isSending = false;
+        return;
+      }
+
+      if (!client || currentToken !== token) {
+        client = new InferenceClient(token);
+        currentToken = token;
+      }
+
+      if (!initialized) await initCharacter();
+
+      messages.push({ role: "user", content: input });
+      appendMsg("user", input);
+      userInput.value = "";
+
+      appendMsg("ai", "...");
+      const loadingDiv = chatBox.lastChild;
+
+      try {
+        const res = await client.chatCompletion({
+          provider: "novita",
+          model: "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+          messages
+        });
+        const reply = res.choices?.[0]?.message?.content?.trim() || "[No response]";
+        loadingDiv.remove();
+        messages.push({ role: "assistant", content: reply });
+        appendMsg("assistant", reply, messages.length - 1);
+      } catch (err) {
+        loadingDiv.remove();
+        appendMsg("ai", `❌ Error: ${err.message}`);
+        console.error(err);
+      } finally {
+        isSending = false;
+      }
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    userInput.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>
